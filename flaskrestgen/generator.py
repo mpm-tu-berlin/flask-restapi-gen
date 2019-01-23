@@ -44,7 +44,7 @@ valid_file = lambda v_file : os.path.exists(v_file) \
 
 class RESTApi:
 
-    def __init__(self, app, db_session, validation_file = None):
+    def __init__(self, app, db_session, validation_file = None, uri_prefix = None):
         
         self.app = app
         self.db_session = db_session
@@ -54,6 +54,11 @@ class RESTApi:
             self._validation = json.loads(open(validation_file).read())
         else:
             self._validation = None
+        
+        if uri_prefix is not None:
+            self.uri_prefix = uri_prefix
+        else:
+            self.uri_prefix = None
         
             
     def get_for(self, model, 
@@ -124,7 +129,11 @@ class RESTApi:
         elif decorator_for_resources:
             _get_resources = decorator_for_resources(_get_resources)
         
-        self.app.route('/%s' % model.__tablename__)(_get_resources)
+        if self.uri_prefix:
+            self.app.route('/%s/%s' % (self.uri_prefix, model.__tablename__))(_get_resources)
+
+        else:
+            self.app.route('/%s' % model.__tablename__)(_get_resources)
         
         def _get_resource(r_id):
             try:
