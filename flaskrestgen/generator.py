@@ -41,10 +41,10 @@ valid_file = lambda v_file: os.path.exists(v_file) \
 
 
 class RESTApi:
-    def __init__(self, app, db_session, validation_file=None, uri_prefix=None):
+    def __init__(self, app, Session, validation_file=None, uri_prefix=None):
 
         self.app = app
-        self.db_session = db_session
+        self.Session = Session
 
         if validation_file is not None and valid_file(validation_file):
             # this is valid json file
@@ -77,57 +77,62 @@ class RESTApi:
             extract = list(extract)
 
         def _get_resources():
-            results = self.db_session.query(model).all()
+            db_session = self.Session()
+            try:
+                results = db_session.query(model).all()
 
-            if not extractfor_resources:
+                if not extractfor_resources:
 
-                _list_data_exp = ({key: val for key, val in vars(r).items()
-                                   if not key.startswith('_')
-                                   } for r in results)
-                # inject the URI to the data
-                if self.uri_prefix:
-                    _list_data = list({**adict, 'uri': '/%s/%s/%s' % (self.uri_prefix,
-                                                                      model.__tablename__,
-                                                                      urllib.parse.quote_plus('+'.join(
-                                                                          [str(adict[pkey]) for pkey in
-                                                                           _primary_keys])))}
-                                      for adict in _list_data_exp)
+                    _list_data_exp = ({key: val for key, val in vars(r).items()
+                                       if not key.startswith('_')
+                                       } for r in results)
+                    # inject the URI to the data
+                    if self.uri_prefix:
+                        _list_data = list({**adict, 'uri': '/%s/%s/%s' % (self.uri_prefix,
+                                                                          model.__tablename__,
+                                                                          urllib.parse.quote_plus('+'.join(
+                                                                              [str(adict[pkey]) for pkey in
+                                                                               _primary_keys])))}
+                                          for adict in _list_data_exp)
+                    else:
+                        _list_data = list({**adict, 'uri': '/%s/%s' % (model.__tablename__, urllib.parse.quote_plus(
+                            '+'.join([str(adict[pkey]) for pkey in _primary_keys])))}
+                                          for adict in _list_data_exp)
+                    # if after request if not not then call the predicate
+                    if before_response_for_resources:
+                        before_response_for_resources(_list_data)
+
+                    return json_records_envelop(_list_data)
                 else:
-                    _list_data = list({**adict, 'uri': '/%s/%s' % (model.__tablename__, urllib.parse.quote_plus(
-                        '+'.join([str(adict[pkey]) for pkey in _primary_keys])))}
-                                      for adict in _list_data_exp)
-                # if after request if not not then call the predicate
-                if before_response_for_resources:
-                    before_response_for_resources(_list_data)
+                    raise NotImplementedError("Untested code, proceed with care!")
+                    _extractfor_resources = list(extractfor_resources)
 
-                return json_records_envelop(_list_data)
-            else:
-                raise NotImplementedError("Untested code, proceed with care!")
-                _extractfor_resources = list(extractfor_resources)
+                    _list_data = []
+                    for result in results:
+                        _adict = {key: val for key, val in vars(result).items() if not key.startswith('_')}
+                        adict = {**_adict, 'uri': '/%s/%s' % (model.__tablename__, urllib.parse.quote_plus(
+                            '+'.join([str(_adict[pkey]) for pkey in _adict[_primary_keys]])))}
+                        # nod for each extract with the many to one relationship,
+                        for relationship in _extractfor_resources:
+                            _rel_val = getattr(result, relationship)
+                            if not _rel_val:
+                                adict[relationship] = None
+                                continue
+                            if not isinstance(_rel_val, collections.Iterable):
+                                adict[relationship] = {key: val for key, val in vars(_rel_val).items()
+                                                       if not key.startswith('_')}
+                                continue
 
-                _list_data = []
-                for result in results:
-                    _adict = {key: val for key, val in vars(result).items() if not key.startswith('_')}
-                    adict = {**_adict, 'uri': '/%s/%s' % (model.__tablename__, urllib.parse.quote_plus(
-                        '+'.join([str(_adict[pkey]) for pkey in _adict[_primary_keys]])))}
-                    # nod for each extract with the many to one relationship,
-                    for relationship in _extractfor_resources:
-                        _rel_val = getattr(result, relationship)
-                        if not _rel_val:
-                            adict[relationship] = None
-                            continue
-                        if not isinstance(_rel_val, collections.Iterable):
-                            adict[relationship] = {key: val for key, val in vars(_rel_val).items()
-                                                   if not key.startswith('_')}
-                            continue
+                            adict[relationship] = list({key: val for key, val in vars(_r_val).items()
+                                                        if not key.startswith('_')}
+                                                       for _r_val in _rel_val)
 
-                        adict[relationship] = list({key: val for key, val in vars(_r_val).items()
-                                                    if not key.startswith('_')}
-                                                   for _r_val in _rel_val)
-
-                    # finally add to the list
-                    _list_data.append(adict)
-                return json_records_envelop(_list_data)
+                        # finally add to the list
+                        _list_data.append(adict)
+                    return json_records_envelop(_list_data)
+            finally:
+                db_session.close()
+                self.Session.remove()
 
         _get_resources.__name__ = 'get_all' + model.__tablename__
 
@@ -144,8 +149,9 @@ class RESTApi:
             self.app.route('/%s' % model.__tablename__)(_get_resources)
 
         def _get_resource(r_id):
+            db_session = self.Session()
             try:
-                result = self.db_session.query(model)
+                result = db_session.query(model)
                 sub_pks = r_id.split("+")
                 for i in range(len(model.__mapper__.primary_key)):
                     result = result.filter(model.__mapper__.primary_key[i] == sub_pks[i])
@@ -180,8 +186,10 @@ class RESTApi:
             except NoResultFound:
                 return record_notfound_envelop()
             else:
-
                 return json_records_envelop(_data)
+            finally:
+                db_session.close()
+                self.Session.remove()
 
         _get_resource.__name__ = 'get' + model.__tablename__
         if decorator_for_resource and isinstance(decorator_for_resource,
@@ -197,7 +205,12 @@ class RESTApi:
 
         if relationship:
             # loads the relationship information
-            self.db_session.query(model)
+            db_session = self.Session()
+            try:
+                db_session.query(model)
+            finally:
+                db_session.close()
+                self.Session.remove()
             ##get the relatioship atributes with the direction having 'ONE TO MANY'
 
             _props = list((attr, rel_prop.mapper) for attr, rel_prop in
@@ -213,8 +226,9 @@ class RESTApi:
                 def _get_resources_by_parent(id):
                     request_target = request.full_path.split("/")[-1].replace("?", "")
                     sub_pks = id.split("+")
+                    db_session = self.Session()
                     try:
-                        children = self.db_session.query(mappers[request_target]).join(model)
+                        children = db_session.query(mappers[request_target]).join(model)
                         for i in range(len(model.__mapper__.primary_key)):
                             children = children.filter(model.__mapper__.primary_key[i] == sub_pks[i])
                         children = children.all()
@@ -243,6 +257,9 @@ class RESTApi:
                         if before_response_for_resources:
                             before_response_for_resources(_list)
                         return json_records_envelop(_list)
+                    finally:
+                        db_session.close()
+                        self.Session.remove()
 
                 _get_resources_by_parent.__name__ = 'get' + _prop + 'by' + model.__tablename__
                 if self.uri_prefix:
@@ -251,138 +268,3 @@ class RESTApi:
                 else:
                     self.app.route('/%s/<id>/%s' % (model.__tablename__, _prop))(_get_resources_by_parent)
 
-    def update_for(self, model,
-                   before_response_for_resource=None,
-                   decorator_for_resource=None):
-        if not model.__mapper__.primary_key:
-            raise PrimaryKeyNotFound('Primary key not found in % table' % model.__tablename__)
-
-        _primary_key = model.__mapper__.primary_key[0].name
-
-        def _update_resource(id):
-            try:
-                self.db_session.query(model).filter(getattr(model, _primary_key) == id).update(request.json)
-                self.db_session.commit()
-            except IntegrityError as e:
-                return record_exists_envelop(format_error(str(e)))
-            except DataError as e:
-                return data_error_envelop(format_data_error(str(e)))
-            else:
-                return record_updated_envelop(request.json)
-
-        _update_resource.__name__ = 'put' + model.__tablename__
-        if decorator_for_resource and isinstance(decorator_for_resource,
-                                                 collections.Iterable):
-            for decorator in decorator_for_resource:
-                _update_resource = decorator(_update_resource)
-        elif decorator_for_resource:
-            _update_resource = decorator_for_resource(_update_resource)
-
-        # add the route
-        self.app.route('/%s/<int:id>' % model.__tablename__, methods=['PUT'])(_update_resource)
-
-    def post_for(self, model, decorator_for_resource=None):
-
-        def _post():
-            if self._validation and model.__name__ in self._validation:
-                valid, err = validate(self._validation[model.__name__], request.json)
-                if not valid:
-                    return validation_error_envelop(err)
-            try:
-                self.db_session.add(model(**request.json))
-                self.db_session.commit()
-
-            except IntegrityError as e:
-                self.db_session.rollback()
-                return record_exists_envelop(format_error(str(e)))
-            except DataError as e:
-                self.db_session.rollback()
-                return data_error_envelop(format_data_error(str(e)))
-            else:
-                return record_created_envelop(request.json)
-
-        # change the name of the function
-        _post.__name__ = 'post' + model.__tablename__
-
-        if decorator_for_resource and isinstance(decorator_for_resource,
-                                                 collections.Iterable):
-            for decorator in decorator_for_resource:
-                _post = decorator(_post)
-        elif decorator_for_resource:
-            _post = decorator_for_resource(_post)
-        self.app.route('/%s' % model.__tablename__, methods=['POST'])(_post)
-
-    def delete_for(self, model, decorator_for_resource=None):
-
-        if not model.__mapper__.primary_key:
-            raise PrimaryKeyNotFound('Primary Key Not Found in %s table' % model.__tablename__)
-
-        # get the primary_key
-        _primary_key = model.__mapper__.primary_key[0].name
-
-        def _delete(id):
-            try:
-                _resource = self.db_session.query(model).filter(getattr(model, _primary_key) == id).one()
-                self.db_session.delete(_resource)
-                self.db_session.commit()
-            except NoResultFound:
-
-                return record_notfound_envelop()
-            else:
-                return record_deleted_envelop()
-
-        _delete.__name__ = 'delete_' + model.__tablename__
-        if decorator_for_resource and isinstance(decorator_for_resource,
-                                                 collections.Iterable):
-            for decorator in decorator_for_resource:
-                _delete = decorator(_delete)
-        elif decorator_for_resource:
-            _delete = decorator_for_resource(_delete)
-
-        self.app.route('/%s/<int:id>' % model.__tablename__, methods=['DELETE'])(_delete)
-
-    def rest_for(self, model, *, extract=None,
-                 relationship=False,
-                 extractfor_resources=False,
-                 before_response_for_resources=None,
-                 before_response_for_resource=None):
-        '''Apply all the http methods for the resources'''
-
-        self.get_for(model, extract=extract,
-                     relationship=relationship,
-                     extractfor_resources=extractfor_resources,
-                     before_response_for_resources=before_response_for_resources,
-                     before_response_for_resource=before_response_for_resource)
-        self.post_for(model)
-        self.delete_for(model)
-        self.update_for(model)
-
-
-def validate(validation, data):
-    # get all the keys from data that are to be validated
-    _keys = list(data.keys() & validation.keys())
-
-    for key in _keys:
-        # get the val
-        _val = data[key]
-
-        if validation[key].get('interpolate', None):
-            data[key] = eval(validation[key]['interpolate'])(_val)
-
-        if validation[key].get('not_null', None) and _val is None:
-            return False, 'Value for key %r cannot be Null/None' % (key)
-
-        if isinstance(_val, int):
-            if validation[key].get('max_val', None) and _val >= validation[key]['max_val']:
-                return False, 'Integer value for %r cannot be greater than  %s' % (key, validation[key]['max_val'])
-
-            if validation[key].get('min_val', None) and _val <= validation[key]['min_val']:
-                return False, 'Integer value for %r cannot be less than %s' % (key, validation[key]['min_val'])
-
-        if validation[key].get('max_len', None) and not len(str(_val)) <= validation[key]['max_len']:
-            return False, 'Value for key %r cannot have length more than %s' % (key, validation[key]['max_len'])
-
-        if validation[key].get('min_len', None) and not len(str(_val)) >= validation[key]['min_len']:
-            return False, 'Value for key %r cannot have length less than %s' % (key, validation[key]['min_len'])
-
-    return True, None
