@@ -84,7 +84,7 @@ class RESTApi:
                 if not extractfor_resources:
 
                     _list_data_exp = ({key: val for key, val in vars(r).items()
-                                       if not key.startswith('_')
+                                       if not key.startswith('_sa')
                                        } for r in results)
                     # inject the URI to the data
                     if self.uri_prefix:
