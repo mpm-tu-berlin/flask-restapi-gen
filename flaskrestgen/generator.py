@@ -158,7 +158,7 @@ class RESTApi:
                 result = result.one()
                 _data = {
                     key: val for key, val in vars(result).items()
-                    if not key.startswith('_')
+                    if not key.startswith('_sa')
                 }
 
                 if before_response_for_resource:
